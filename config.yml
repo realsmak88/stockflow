@@ -1,0 +1,43 @@
+species:
+
+  name: "Sardinella aurita"
+
+biology:
+
+  Linf: 34
+
+  K: 0.65
+
+  t0: -0.25
+
+  M: 1.2
+
+  L50: 18
+
+  L95: 22
+
+sampling:
+
+  bin_size: 1
+
+  plus_group: 35
+
+analysis:
+
+  bootstrap: 500
+
+  seasonalised: true
+
+management:
+
+  F_target: 0.5
+
+  SPR_target: 0.40
+
+  B_target: 1.0
+
+mse:
+
+  years: 30
+
+  simulations: 1000

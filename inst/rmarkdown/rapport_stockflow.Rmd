@@ -1,0 +1,374 @@
+---
+title: "`r params$title`"
+author: "`r params$author`"
+date: "`r format(Sys.Date(), '%d %B %Y')`"
+params:
+  results: NULL
+  title: "Stock assessment - stockflow"
+  author: "stockflow"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    theme: flatly
+    df_print: kable
+  pdf_document:
+    toc: true
+    number_sections: true
+  word_document:
+    toc: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo    = FALSE,
+  message = FALSE,
+  warning = FALSE,
+  fig.width  = 8,
+  fig.height = 4.8,
+  dpi = 150
+)
+
+res <- params$results
+
+# Availability of sections
+has_growth    <- !is.null(res$growth)
+has_mortality <- !is.null(res$mortality)
+has_allometry <- !is.null(res$allometry)
+has_maturity  <- !is.null(res$maturity)
+has_lbb       <- !is.null(res$lbb)
+has_lbspr     <- !is.null(res$lbspr)
+has_ypr       <- !is.null(res$ypr)
+has_tac       <- !is.null(res$tac)
+has_quota     <- !is.null(res$quota)
+has_closure   <- !is.null(res$closure)
+has_size      <- !is.null(res$size_advice)
+has_mse       <- !is.null(res$mse)
+has_gg        <- requireNamespace("ggplot2", quietly = TRUE)
+
+kb <- function(x, ...) knitr::kable(x, row.names = FALSE, digits = 3, ...)
+```
+
+# Executive Summary
+
+```{r meta}
+meta <- res$meta
+if (length(meta)) {
+  kb(data.frame(Champ = names(meta),
+                Value = vapply(meta, function(v) paste(v, collapse = ", "),
+                                character(1)),
+                stringsAsFactors = FALSE))
+}
+```
+
+```{r summary-table}
+st <- tryCatch(
+  if (requireNamespace("stockflow", quietly = TRUE))
+    stockflow::summary_table(res)
+  else
+    summary_table(res),
+  error = function(e) NULL
+)
+if (!is.null(st) && nrow(st) > 0) kb(st) else cat("No indicators available.\n")
+```
+
+```{r conclusion, results='asis'}
+# Summary diagnostic
+statuts <- c()
+if (has_lbspr && nrow(res$lbspr$summary) > 0)
+  statuts <- c(statuts,
+               paste("LBSPR:", res$lbspr$summary$statut[nrow(res$lbspr$summary)]))
+if (has_lbb && !is.null(res$lbb$ref_levels))
+  statuts <- c(statuts, paste("LBB:", res$lbb$ref_levels$statut))
+if (has_mortality)
+  statuts <- c(statuts, paste("Exploitation:", res$mortality$summary$statut))
+
+if (length(statuts))
+  cat("\n**Diagnostic:**\n\n", paste0("- ", statuts, collapse = "\n"), "\n")
+```
+
+```{r growth-title, eval=has_growth, results='asis'}
+cat("\n# Growth\n")
+```
+
+```{r growth-tab, eval=has_growth}
+g <- res$growth
+if (!is.null(g$comparison)) {
+  cat("Multi-criteria comparison of fitted methods:\n")
+  kb(g$comparison)
+}
+```
+
+```{r growth-best, eval=has_growth, results='asis'}
+if (!is.null(g$best))
+  cat(sprintf("\n**Selected model: %s** — Linf = %.2f, K = %.3f, phiL = %.3f\n",
+              g$best$method, g$best$Linf, g$best$K, g$best$phiL))
+```
+
+```{r growth-curve, eval=has_growth && has_gg}
+b <- g$best
+if (!is.null(b) && is.finite(b$Linf) && is.finite(b$K)) {
+  ages <- seq(0, 6, by = 0.05)
+  L    <- b$Linf * (1 - exp(-b$K * (ages - 0)))
+  df   <- data.frame(age = ages, length = L)
+  ggplot2::ggplot(df, ggplot2::aes(age, length)) +
+    ggplot2::geom_line(colour = "#12507b", linewidth = 1) +
+    ggplot2::labs(title = "Von Bertalanffy curve",
+                  x = "Age (year)", y = "Length") +
+    ggplot2::theme_bw()
+}
+```
+
+```{r mortalite-titre, eval=has_mortality, results='asis'}
+cat("\n# Mortality\n")
+```
+
+```{r mortalite-synth, eval=has_mortality, results='asis'}
+mo <- res$mortality
+cat(sprintf("\n- Z = %.3f\n- M (consensus) = %.3f\n- F = %.3f\n- E = F/Z = %.3f\n- F/M = %.3f\n- **Status: %s**\n",
+            mo$Z$Z, mo$M_consensus, mo$summary$F,
+            mo$summary$E, mo$summary$FM, mo$summary$statut))
+```
+
+```{r mortalite-M, eval=has_mortality}
+cat("\nEstimates of M by method (TropFishR, FSA, fishmethods, Jensen):\n")
+kb(res$mortality$comparison)
+```
+
+```{r mortalite-plot, eval=has_mortality && has_gg}
+cmp <- res$mortality$comparison
+if (nrow(cmp) > 1) {
+  cmp$method <- factor(cmp$method, levels = cmp$method[order(cmp$M)])
+  ggplot2::ggplot(cmp, ggplot2::aes(M, method)) +
+    ggplot2::geom_point(colour = "#12507b", size = 2) +
+    ggplot2::geom_vline(xintercept = res$mortality$M_consensus,
+                        linetype = 2, colour = "#c0392b") +
+    ggplot2::labs(title = "Natural mortality M by method",
+                  subtitle = "Red line = consensus (geometric mean)",
+                  x = "M", y = NULL) +
+    ggplot2::theme_bw()
+}
+```
+
+```{r allometrie-titre, eval=has_allometry, results='asis'}
+cat("\n# Length-weight allometry\n")
+```
+
+```{r allometrie, eval=has_allometry, results='asis'}
+a <- res$allometry
+cat(sprintf("\nRelationship: **W = %.5g · L^%.3f** (r² = %.3f, n = %d)\n\n95%% CI for b: [%.3f ; %.3f] — %s\n",
+            a$a, a$b, a$r2, a$n, a$b_ci[1], a$b_ci[2], a$allometry))
+```
+
+```{r maturite-titre, eval=has_maturity, results='asis'}
+cat("\n# Maturity\n")
+m <- res$maturity
+cat(sprintf("\n- L50 = %.2f\n- L95 = %.2f\n", m$L50, m$L95))
+```
+
+```{r lbb-titre, eval=has_lbb, results='asis'}
+cat("\n# LBB — Length-Based Bayesian Biomass\n")
+```
+
+```{r lbb-tab, eval=has_lbb}
+kb(res$lbb$summary)
+```
+
+```{r lbb-plot, eval=has_lbb && has_gg}
+df <- res$lbb$summary
+long <- data.frame(
+  Year = rep(df$Year, 3),
+  ind  = rep(c("B/B0", "B/Bmsy", "F/M"), each = nrow(df)),
+  val  = c(df$BB0, df$BBmsy, df$FM)
+)
+long <- long[is.finite(long$val), ]
+if (nrow(long) > 0) {
+  ggplot2::ggplot(long, ggplot2::aes(Year, val)) +
+    ggplot2::geom_line(colour = "#12507b") +
+    ggplot2::geom_point(size = 1) +
+    ggplot2::geom_hline(yintercept = 1, linetype = 2, colour = "grey40") +
+    ggplot2::facet_wrap(~ ind, scales = "free_y") +
+    ggplot2::labs(title = "LBB — status indicators", x = NULL, y = NULL) +
+    ggplot2::theme_bw()
+}
+```
+
+```{r lbspr-titre, eval=has_lbspr, results='asis'}
+cat("\n# LBSPR — Spawning Potential Ratio (SPR)\n")
+```
+
+```{r lbspr-tab, eval=has_lbspr}
+kb(res$lbspr$summary)
+```
+
+```{r lbspr-plot, eval=has_lbspr && has_gg}
+df  <- res$lbspr$summary
+tgt <- res$lbspr$targets
+ggplot2::ggplot(df, ggplot2::aes(Year, SPR)) +
+  ggplot2::geom_ribbon(ggplot2::aes(ymin = 0, ymax = tgt[["SPR_limit"]]),
+                       fill = "#FF7F7F", alpha = .2) +
+  ggplot2::geom_line(colour = "#12507b") +
+  ggplot2::geom_point(size = 1.5) +
+  ggplot2::geom_hline(yintercept = tgt[["SPR_target"]], linetype = 2,
+                      colour = "darkgreen") +
+  ggplot2::geom_hline(yintercept = tgt[["SPR_limit"]], linetype = 3,
+                      colour = "red") +
+  ggplot2::ylim(0, 1) +
+  ggplot2::labs(title = "SPR by year",
+                subtitle = "Green = target; red = limit",
+                x = NULL, y = "SPR") +
+  ggplot2::theme_bw()
+```
+
+```{r ypr-titre, eval=has_ypr, results='asis'}
+cat("\n# YPR — Yield per recruit and reference points\n")
+```
+
+```{r ypr-tab, eval=has_ypr}
+kb(res$ypr$reference_points)
+```
+
+```{r ypr-txt, eval=has_ypr, results='asis'}
+rp <- res$ypr$reference_points[1, , drop = FALSE]
+if (!is.null(rp$F01) && !is.null(rp$Fmax))
+  cat(sprintf(paste0("\nPer-recruit reference points (Beverton & Holt): ",
+                     "**F0.1 = %.3f**, Fmax = %.3f, E0.1 = %.3f, Emax = %.3f.\n",
+                     "\nF0.1 is the recommended precautionary management point ",
+                     "(slope = 10%% of the slope at the origin).\n"),
+              rp$F01, rp$Fmax, rp$E01, rp$Emax))
+```
+
+```{r tac-titre, eval=has_tac, results='asis'}
+cat("\n# TAC — Total Allowable Catch\n")
+```
+
+```{r tac-txt, eval=has_tac, results='asis'}
+tc <- res$tac
+cat(sprintf(paste0("\n- Method: %s\n- Raw TAC: %.1f t\n",
+                   if (tc$buffer > 0) "- Precaution: -%.0f%%\n" else "%s",
+                   "- **Final TAC: %.1f t**\n"),
+            tc$method, tc$TAC_raw,
+            if (tc$buffer > 0) 100 * tc$buffer else "",
+            tc$TAC))
+```
+
+```{r quota-tab, eval=has_quota, results='asis'}
+cat("\n## Quota allocation by segment / fleet\n\n")
+kb(res$quota$quotas)
+cat(sprintf("\nSum of quotas: %.1f t (difference of %.2f t from the TAC).\n",
+            res$quota$somme_quotas, res$quota$ecart_somme))
+```
+
+```{r quota-plot, eval=has_quota && has_gg}
+q <- res$quota$quotas
+q$segment <- factor(q$segment, levels = q$segment[order(q$quota_t)])
+ggplot2::ggplot(q, ggplot2::aes(quota_t, segment)) +
+  ggplot2::geom_col(fill = "#12507b") +
+  ggplot2::geom_text(ggplot2::aes(label = sprintf("%.0f t", quota_t)),
+                     hjust = -0.1, size = 3) +
+  ggplot2::labs(title = "Quota allocation by segment",
+                x = "Quota (t)", y = NULL) +
+  ggplot2::expand_limits(x = max(q$quota_t) * 1.12) +
+  ggplot2::theme_bw()
+```
+
+```{r closure-titre, eval=has_closure, results='asis'}
+cat("\n# Biological rest period — optimal window and duration\n")
+```
+
+```{r closure-txt, eval=has_closure, results='asis'}
+b <- res$closure$best
+cat(sprintf(paste0("\n**Recommended window: %d months (%s).** ",
+                   "It protects %.0f%% of the annual reproduction and recruitment score.\n"),
+            b$duration, b$months_label, 100 * b$protected))
+```
+
+```{r closure-tab, eval=has_closure}
+if (!is.null(res$closure$by_duration)) {
+  cat("Comparison of closure durations:\n")
+  kb(res$closure$by_duration)
+}
+```
+
+```{r closure-plot, eval=has_closure && has_gg}
+df <- res$closure$monthly
+prot <- res$closure$best$months
+df$statut <- ifelse(df$month %in% prot, "Proposed window", "Outside closure")
+df$month_label <- factor(df$month_label, levels = df$month_label)
+ggplot2::ggplot(df, ggplot2::aes(month_label, score, fill = statut)) +
+  ggplot2::geom_col() +
+  ggplot2::scale_fill_manual(values = c("Proposed window" = "#c0392b",
+                                        "Outside closure" = "grey75"), name = NULL) +
+  ggplot2::labs(title = "Monthly closure score and optimal window",
+                x = NULL, y = "Closure score") +
+  ggplot2::theme_bw() +
+  ggplot2::theme(legend.position = "bottom")
+```
+
+```{r size-titre, eval=has_size, results='asis'}
+cat("\n# Technical measures — management sizes\n")
+```
+
+```{r size-tab, eval=has_size, results='asis'}
+r <- res$size_advice$reference
+cat(sprintf("\nReference sizes: Lopt = %.1f cm, Lc_opt = %.1f cm%s.\n\n",
+            r$Lopt, r$Lc_opt,
+            if (!is.null(r$L50_maturity))
+              sprintf(", L50 maturity = %.1f cm", r$L50_maturity) else ""))
+kb(res$size_advice$advice)
+```
+
+```{r mse-titre, eval=has_mse, results='asis'}
+cat("\n# Management measures — scenario comparison\n")
+```
+
+```{r mse-tab, eval=has_mse}
+kb(res$mse$comparison)
+```
+
+```{r mse-plot, eval=has_mse && has_gg}
+df  <- res$mse$comparison
+tgt <- res$mse$targets
+ggplot2::ggplot(df, ggplot2::aes(SPR, Yield_rel, label = scenario)) +
+  ggplot2::annotate("rect", xmin = 0, xmax = tgt[["SPR_limit"]],
+                    ymin = -Inf, ymax = Inf, fill = "#FF7F7F", alpha = .18) +
+  ggplot2::geom_vline(xintercept = tgt[["SPR_target"]], linetype = 2,
+                      colour = "darkgreen") +
+  ggplot2::geom_point(size = 3, colour = "#12507b") +
+  ggplot2::geom_text(vjust = -0.8, size = 3) +
+  ggplot2::labs(title = "Trade-off between yield and spawning potential",
+                x = "SPR", y = "Relative yield") +
+  ggplot2::theme_bw()
+```
+
+```{r mse-reco, eval=has_mse, results='asis'}
+df <- res$mse$comparison
+ok <- df[is.finite(df$SPR) & df$SPR >= res$mse$targets[["SPR_target"]], ]
+if (nrow(ok) > 0) {
+  best <- ok[which.max(ok$Yield_rel), ]
+  cat(sprintf("\n**Recommendation:** among the scenarios reaching the SPR target, *%s* maximizes relative yield (SPR = %.2f, yield = %.3f).\n",
+              best$scenario, best$SPR, best$Yield_rel))
+} else {
+  cat("\n**Alert:** none of the tested scenarios reach the SPR target — strengthened measures are needed.\n")
+}
+```
+
+# Methods and References
+
+Analyses carried out with the **stockflow** package, which wraps the
+official functions of:
+
+- **TropFishR** — Mildenberger, T.K., Taylor, M.H., Wolff, M. (2017). *Methods Ecol. Evol.* 8(11).
+- **FSA** — Ogle, D.H. (2016). *Introductory Fisheries Analyses with R*.
+- **LBB** — Froese, R., Winker, H., Coro, G. et al. (2018). *ICES J. Mar. Sci.* 75(6): 2004-2015.
+- **LBSPR** — Hordyk, A. et al. (2015). *ICES J. Mar. Sci.* 72(1): 217-231.
+- **openMSE / MSEtool** — Carruthers, T.R., Hordyk, A.R. (2018). *Methods Ecol. Evol.* 9(12).
+
+Natural mortality estimators: Pauly (1980), Hoenig (1983), Jensen (1996),
+Gislason et al. (2010), Then et al. (2015).
+
+```{r session, results='asis'}
+cat(sprintf("\n---\n\n*Report generated on %s with stockflow.*\n",
+            format(Sys.time(), "%d/%m/%Y at %H:%M")))
+```

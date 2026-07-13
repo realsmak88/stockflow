@@ -1,0 +1,33 @@
+# Normalisation des fins de ligne : LF dans le depot, conversion auto au checkout
+* text=auto eol=lf
+
+# Fichiers texte du package : toujours LF
+*.R    text eol=lf
+*.Rmd  text eol=lf
+*.md   text eol=lf
+*.Rd   text eol=lf
+*.csv  text eol=lf
+*.yaml text eol=lf
+*.yml  text eol=lf
+DESCRIPTION   text eol=lf
+NAMESPACE     text eol=lf
+.Rbuildignore text eol=lf
+
+# Fichiers binaires : jamais de conversion de fins de ligne ni de diff textuel
+*.rda  binary
+*.RData binary
+*.rds  binary
+*.png  binary
+*.jpg  binary
+*.jpeg binary
+*.gif  binary
+*.pdf  binary
+*.so   binary
+*.o    binary
+*.html binary
+
+# Statistiques linguistiques GitHub : exclure la doc generee et les scripts livres
+man/**      linguist-generated=true
+inst/doc/** linguist-generated=true
+data/**     linguist-generated=true
+*.html      linguist-documentation=true

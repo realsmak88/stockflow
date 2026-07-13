@@ -1,0 +1,40 @@
+# RStudio
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+
+# macOS
+.DS_Store
+
+# Fichiers de travail / temporaires
+*.RData
+*.tar.gz
+LFQ_preparation.RData
+
+# Sorties de build R
+*.Rcheck/
+*.tar.gz
+..Rcheck/
+
+# Sorties du projet (non versionnées)
+output/
+reports/
+
+# Donnees brutes volumineuses (les .rda du package dans data/ SONT versionnes)
+data-raw/processed/
+data-raw/raw/
+inst/doc/
+
+# Bibliotheque R locale (specifique a l'environnement de developpement)
+.r-libs/
+
+# Figures de demonstration (regenerees par les scripts / la vignette)
+*_demo.png
+plots_ci_demo.png
+
+# Sorties graphiques accidentelles
+Rplots.pdf
+/doc/
+/Meta/
+00check_final_en.log

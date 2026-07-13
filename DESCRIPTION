@@ -1,0 +1,54 @@
+Package: stockflow
+Title: Integrated Workflow for Length-Based Fish Stock Assessment
+Version: 0.1.0
+Authors@R:
+    person(given = "Kamarel",
+           family = "Ba",
+           role = c("aut", "cre"),
+           email = "bakamarel@gmail.com")
+Description: An integrated, reproducible workflow for data-limited fish stock
+    assessment based on length-frequency data. Provides robust wrappers around
+    established scientific packages for data import and validation, growth
+    estimation (ELEFAN via 'TropFishR'), natural and total mortality (including
+    the empirical estimators of 'FSA' and 'TropFishR'), length-weight allometry,
+    Length-Based Bayesian Biomass ('LBB'), Length-Based Spawning Potential Ratio
+    ('LBSPR'), simulation of management measures, and automated reporting. The
+    package never re-implements the underlying scientific algorithms; it composes
+    the official implementations into a coherent, documented pipeline.
+License: GPL-3
+Encoding: UTF-8
+LazyData: true
+Depends:
+    R (>= 4.1)
+Imports:
+    FSA,
+    ggplot2,
+    grDevices,
+    graphics,
+    janitor,
+    methods,
+    readr,
+    readxl,
+    stats,
+    stringr,
+    tibble,
+    tools,
+    TropFishR,
+    utils,
+    yaml
+Suggests:
+    car,
+    fishmethods,
+    knitr,
+    LBSPR,
+    MSEtool,
+    patchwork,
+    R2jags,
+    rmarkdown,
+    targets,
+    testthat (>= 3.0.0)
+VignetteBuilder: knitr
+Config/testthat/edition: 3
+URL: https://github.com/realsmak88/stockflow
+BugReports: https://github.com/realsmak88/stockflow/issues
+Config/roxygen2/version: 8.0.0

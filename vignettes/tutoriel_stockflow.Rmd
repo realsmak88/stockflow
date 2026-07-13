@@ -1,0 +1,457 @@
+---
+title: "Stockflow Tutorial — from raw file to stock assessment"
+author: "Kamarel Ba"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+    theme: flatly
+vignette: >
+  %\VignetteIndexEntry{Tutoriel stockflow}
+  %\VignetteEngine{knitr::rmarkdown}
+  %\VignetteEncoding{UTF-8}
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo    = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  fig.width = 8,
+  fig.height = 5,
+  collapse = TRUE,
+  comment = "#>"
+)
+
+# Detection of package availability (heavy chunks are conditional)
+has_tropfish <- requireNamespace("TropFishR", quietly = TRUE)
+has_fsa      <- requireNamespace("FSA",       quietly = TRUE)
+has_jags     <- requireNamespace("R2jags",    quietly = TRUE)
+has_lbspr    <- requireNamespace("LBSPR",     quietly = TRUE)
+```
+
+# Purpose of the tutorial
+
+This tutorial walks through **the entire `stockflow` pipeline** on the example (fictitious) data
+bundled with the package. The running example is
+the volute *Cymbium cymbium*; the same functions apply to octopus
+(*Octopus vulgaris*) and shrimp (*Penaeus notialis*), also provided.
+
+The complete pipeline:
+
+```
+Import / Data ---> Graphical exploration ---> LFQ preparation
+        |                                              |
+   Allometry <---------- maturity (L50) ----------> Growth (VBGF)
+        |                     |                        |
+        +--------> Mortality (M, Z, F, E) <-----------+
+                              |
+        +---------------------+---------------------+
+        |                     |                     |
+   LBB / LBSPR            YPR / SPR            Biological rest period
+        |                     |                     |
+        +--> TAC + quotas <---+     Technical measures (Lc, mesh size)
+                              |
+                     Automatic report HTML / PDF / DOCX
+```
+
+The package follows a strict rule: **it never implements a scientific
+algorithm itself**. Each function is a documented *wrapper* around the
+official implementations of **TropFishR**, **FSA**, **LBSPR**, **LBB**, and
+**fishmethods**.
+
+> **Reproducibility.** No function uses `library()`; everything goes through
+> `stockflow::function()` or `package::function()`. The costly steps (ELEFAN,
+> LBB via JAGS) are shown but not executed when the vignette is built
+> (`eval = FALSE`).
+
+# Setup
+
+```{r load-package}
+library(stockflow)
+```
+
+The datasets are available as soon as the package is loaded (`LazyData`):
+
+```{r data-overview}
+data("cymbium_bio",   package = "stockflow")
+data("cymbium_freq",  package = "stockflow")
+
+# Working on a single species for the running example
+bio  <- subset(cymbium_bio,  species == "Cymbium cymbium")
+freq <- subset(cymbium_freq, species == "Cymbium cymbium")
+
+c(n_biologie = nrow(bio), n_frequences = nrow(freq),
+  LCQ_min = min(freq$LCQ, na.rm = TRUE),
+  LCQ_max = max(freq$LCQ, na.rm = TRUE))
+```
+
+Datasets provided with the package:
+
+| Dataset            | Description                              | Rows    |
+|--------------------|------------------------------------------|---------|
+| `cymbium_bio`      | Volute biological data (4 species)       | 3 130   |
+| `cymbium_freq`     | Volute size frequencies                  | 8 243   |
+| `octopus_bio`      | Octopus biological data                  | 1 682   |
+| `octopus_freq`     | Octopus size frequencies                 | 1 689   |
+| `penaeus_bio`      | Shrimp biological data (+ gonads)        | 6 286   |
+| `penaeus_freq`     | Shrimp size frequencies                  | 31 043  |
+| `total_catches` | Annual catches by group                     | 55      |
+| `annual_cpue`    | Annual CPUE by group                        | 47      |
+
+# Step 1 — Graphical exploration
+
+The graphical module (`plot_*`) provides publication-ready figures, all
+paired with **confidence intervals** where relevant.
+
+## Size distribution
+
+```{r plot-lf}
+plot_length_frequency(freq, length_col = "LCQ", sex_col = "sex")
+```
+
+## Length-weight relationship (power AND log-log)
+
+```{r plot-lw, fig.width=10}
+plot_length_weight(bio, length_col = "LCQ", weight_col = "weight",
+                   scale = "both")
+```
+
+## Monthly size evolution
+
+Useful for tracking the modal progression of cohorts:
+
+```{r plot-evolution}
+plot_length_evolution(freq, length_col = "LCQ", date_col = "Date",
+                      period = "month", type = "density")
+```
+
+```{r plot-evolution-hist}
+plot_length_evolution(freq, length_col = "LCQ", date_col = "Date",
+                      period = "month", type = "histogram")
+```
+
+# Step 2 — Preparing the LFQ object
+
+`prepare_tropfish()` builds an `lfq` object compatible with **TropFishR** from
+`Length`, `Year`, `Month` columns.
+
+```{r prepare-lfq, eval=has_tropfish}
+freq$Length <- freq$LCQ
+freq$Year   <- as.integer(format(freq$Date, "%Y"))
+freq$Month  <- as.integer(format(freq$Date, "%m"))
+
+lfq <- prepare_tropfish(freq, bin_size = 2, species = "Cymbium cymbium",
+                        stock_name = "Cymbium", length_unit = "cm")
+c(classe = class(lfq), n_classes = length(lfq$midLengths),
+  n_dates = length(lfq$dates))
+```
+
+# Step 3 — Growth (von Bertalanffy)
+
+`stockflow` follows the **TropFishR growth protocol** in four stages:
+
+1. **Powell-Wetherall** — a first estimate of \(L_{inf}\) (and of \(Z/K\));
+2. **K-Scan** — with \(L_{inf}\) fixed, \(K\) is scanned to find the value that
+   maximizes the restructuring score \(R_n\) (informed starting value);
+3. **ELEFAN** — search over the **response surface** \(L_{inf}\times K\)
+   (grid), then refinement via **simulated annealing** (SA) and **genetic
+   algorithm** (GA);
+4. **Multi-criteria comparison** and automatic selection of the best model,
+   with visual verification: the growth curve must **pass through the
+   modes** of the restructured frequencies.
+
+## Powell-Wetherall then K-Scan
+
+`run_powell()` calls `TropFishR::powell_wetherall()`. The regression interval
+`reg_int` is normally requested interactively; in a script it is provided
+explicitly.
+
+```{r growth-powell, eval=has_tropfish}
+pw <- run_powell(lfq, reg_int = c(2, 12))
+ks <- run_kscan(lfq, Linf = pw, K_range = seq(0.1, 1.5, 0.1))
+c(Linf_Powell = round(ks$Linf, 2), K_optimal = round(ks$K, 3))
+```
+
+```{r kscan-plot, eval=has_tropfish}
+plot_response_surface(ks)   # Rn(K) score profile at fixed Linf
+```
+
+## ELEFAN response surface
+
+`run_elefan()` wraps `TropFishR::ELEFAN()`: the grid search produces a score
+matrix plotted as a heatmap with a confidence contour.
+
+```{r elefan-grid, eval=has_tropfish}
+el <- run_elefan(lfq, Linf_range = seq(36, 46, 2),
+                 K_range = seq(0.2, 1.0, 0.2), MA = 5)
+plot_response_surface(el)
+```
+
+Refinement via simulated annealing and genetic algorithm is more costly (1–3
+min); it is shown without being executed, along with the multi-criteria
+comparison and automatic selection.
+
+```{r growth-elefan-refine, eval=FALSE}
+ga  <- run_elefan_ga(lfq, Linf_range = c(36, 46), K_range = c(0.2, 1.0))
+sa  <- run_elefan_sa(lfq, Linf_range = c(36, 46), K_range = c(0.2, 1.0))
+
+# Orchestrator: Powell + K-Scan + ELEFAN(grid/GA/SA) + comparison + selection
+an <- run_growth_analysis(lfq, Linf_range = c(36, 46), K_range = c(0.2, 1.0))
+an$comparison   # multi-criteria table (Rn_max, phi', ...)
+an$best         # best model selected
+```
+
+## Verification: does the curve pass through the modes?
+
+`plot_growth_modes()` overlays the VBGF curve on the **restructured**
+frequencies (positive scores = modes in blue). This is the final visual check
+of the protocol.
+
+```{r growth-modes, eval=has_tropfish, fig.height=5}
+plot_growth_modes(lfq, el, MA = 5)
+```
+
+For the rest of the tutorial, plausible parameters are fixed for *Cymbium
+cymbium*:
+
+```{r growth-fixed}
+Linf <- 42;  K <- 0.45;  t0 <- 0
+```
+
+## Growth curve (age → length)
+
+```{r vbgf-curve, eval=has_tropfish}
+plot_vbgf(Linf = Linf, K = K, t0 = t0, tmax = 8, length_unit = "cm")
+```
+
+# Step 4 — Mortality
+
+## Natural mortality M — all methods
+
+`estimate_M_all()` combines the empirical estimators from **FSA**
+(`Mmethods` + `metaM`, ~25 methods), from **TropFishR**, and from Jensen, then
+derives a **consensus** (geometric mean).
+
+```{r mortality-M}
+M <- estimate_M_all(Linf = Linf, K = K, temp = 24, tmax = 8)
+c(n_methodes = nrow(M$table),
+  M_geomean  = round(M$consensus[["geomean"]], 3),
+  M_median   = round(M$consensus[["median"]], 3))
+```
+
+```{r mortality-M-plot}
+plot(M)
+```
+
+## Total mortality Z, then F and E
+
+In production, `run_mortality()` chains the length-converted catch curve (Z),
+the M consensus, then F = Z − M and the exploitation rate E = F / Z. The catch
+curve requires a regression interval (interactive if not supplied); it is
+therefore shown without being executed.
+
+```{r mortality-run, eval=FALSE}
+mort <- run_mortality(lfq, growth_model = list(Linf = Linf, K = K, t0 = t0),
+                      temp = 24, tmax = 8)
+mort$summary   # columns Z, M, F, E
+```
+
+# Step 5 — Length-weight allometry
+
+```{r allometry}
+lw <- fit_length_weight(bio, length_col = "LCQ", weight_col = "weight")
+c(a = round(lw$a, 4), b = round(lw$b, 3),
+  b_ic_bas = round(lw$b_ci[1], 3), b_ic_haut = round(lw$b_ci[2], 3),
+  R2 = round(lw$r2, 3))
+```
+
+The confidence interval on *b* allows testing for isometry (b = 3):
+
+```{r allometry-plot}
+plot(lw)
+```
+
+# Step 6 — Maturity (L50)
+
+The logistic maturity ogive gives the size at first maturity L50, essential
+for LBSPR and for technical measures. The `plot_maturity_ogive()` function
+plots the ogive with a CI (delta method on L50).
+
+```{r maturity-plot}
+plot_maturity_ogive(bio, length_col = "LCQ", maturity_col = "maturity",
+                    mature_codes = c("M", "P"))
+```
+
+L50 / L95 are recovered numerically via the binomial GLM:
+
+```{r maturity-values}
+d <- bio[!is.na(bio$maturity) & !is.na(bio$LCQ), ]
+d$mature <- as.integer(d$maturity %in% c("M", "P"))
+gm  <- stats::glm(mature ~ LCQ, data = d, family = stats::binomial())
+cf  <- stats::coef(gm)
+L50 <- as.numeric(-cf[1] / cf[2])
+L95 <- as.numeric((log(0.95 / 0.05) - cf[1]) / cf[2])
+c(L50 = round(L50, 2), L95 = round(L95, 2))
+```
+
+# Step 7 — LBSPR (Spawning Potential Ratio)
+
+```{r lbspr, eval=has_lbspr}
+pars <- lbspr_pars(Linf = Linf, L50 = L50, L95 = L95, MK = 1.5)
+# selectivity and F/M on the LB_pars object
+pars@SL50 <- L50;  pars@SL95 <- L95;  pars@FM <- 1
+sim <- lbspr_sim(pars)
+c(SPR = round(sim@SPR, 3))
+```
+
+# Step 8 — LBB (Length-Based Bayesian Biomass)
+
+The LBB method (Froese's official script, via **JAGS**) estimates B/B0, Y/R,
+and reference points. It requires the external JAGS software; the workflow is
+shown without being executed.
+
+```{r lbb, eval=FALSE}
+lbb_in  <- prepare_lbb_data(lfq)
+lbb_out <- run_lbb_froese(lbb_in, stock = "Cymbium")
+extract_lbb(lbb_out)
+```
+
+The length-based reference points derived from Linf are directly accessible:
+
+```{r lbb-refpts}
+rp_lb <- lbb_reference_points(Linf = Linf, MK = 1.5, FM = 1)
+c(Lopt = round(rp_lb$Lopt, 1), Lc_opt = round(rp_lb$Lc_opt, 1))
+```
+
+# Step 9 — YPR and per-recruit reference points
+
+`ypr_param()` assembles the parameters, `run_ypr()` runs TropFishR's
+per-recruit model, `ypr_reference_points()` extracts F0.1, Fmax, and the
+associated E values.
+
+```{r ypr}
+Mstar <- M$consensus[["geomean"]]
+yp <- ypr_param(Linf = Linf, K = K, t0 = t0, M = Mstar,
+                a = lw$a, b = lw$b, Lc = L50, Lr = 4, bin_size = 2)
+yr <- run_ypr(yp)
+rp <- ypr_reference_points(yr)
+c(F0.1 = round(rp$F01, 3), Fmax = round(rp$Fmax, 3),
+  E0.1 = round(rp$E01, 3), Emax = round(rp$Emax, 3))
+```
+
+```{r ypr-plot}
+plot(yr)
+```
+
+# Step 10 — TAC and quota allocation
+
+The TAC is derived from the current catch and an exploitation target (here
+E0.1), with a precautionary buffer. Quotas are then allocated by species in
+proportion to historical catches.
+
+```{r tac}
+tac <- compute_tac(method = "ratio_E", catch_current = 1200,
+                   E_current = 0.73, E_target = rp$E01, buffer = 0.10)
+c(TAC_brut = round(tac$TAC_raw, 1), TAC_final = round(tac$TAC, 1))
+```
+
+```{r quota}
+# Pro-rata of the 4 Cymbium species (proxy = sampled biomass)
+agg <- aggregate(weight ~ species, data = cymbium_bio,
+                 FUN = function(x) sum(x, na.rm = TRUE) / 1000)
+names(agg) <- c("espece", "capture_t")
+agg$annee  <- 2023
+
+pr <- compute_prorata(agg, segment_col = "espece",
+                      catch_col = "capture_t", year_col = "annee")
+q  <- allocate_quota(tac, pr)
+q$quotas
+```
+
+# Step 11 — Biological rest period (spatio-temporal closure)
+
+`spawning_season()` computes the monthly proportion of spawners;
+`optimal_closure()` searches for the closure window that best protects
+reproduction (circular sliding window).
+
+```{r closure}
+sp  <- spawning_season(bio, date_col = "Date", maturity_col = "maturity",
+                       mature_codes = c("M", "P"))
+clo <- optimal_closure(spawning = sp, duration = 3)
+c(fenetre = clo$best$months_label,
+  duree_mois = length(clo$best$months),
+  part_protegee = round(clo$best$protected, 3))
+```
+
+```{r closure-plot}
+plot(clo)
+```
+
+# Step 12 — Technical measures (management size, mesh size)
+
+`recommend_sizes()` evaluates candidate minimum sizes against L50, Lopt, and
+Lc_opt; `retention_curve()` plots the gear's retention ogive.
+
+```{r sizes}
+adv <- recommend_sizes(candidates = c(8, 10, 12, 14),
+                       Linf = Linf, L50_maturity = L50, MK = 1.5)
+adv$advice[, c("Lc", "verdict")]
+```
+
+```{r retention}
+ret <- retention_curve(Lt = seq(2, 20, 0.5), type = "trawl_ogive",
+                       L50 = L50, L75 = L50 * 1.1)
+head(ret)
+```
+
+# Step 13 — Summary and automatic report
+
+`collect_results()` aggregates all results, `summary_table()` produces the
+summary table, and `fishstock_report()` generates an HTML / PDF / DOCX report
+containing only the available sections.
+
+```{r collect}
+res <- collect_results(
+  allometry   = lw,
+  ypr         = yr,
+  tac         = tac,
+  quota       = q,
+  closure     = clo,
+  size_advice = adv,
+  maturity    = list(L50 = L50, L95 = L95),
+  meta        = list(species = "Cymbium cymbium", stock = "Cymbium")
+)
+summary_table(res)
+```
+
+```{r report, eval=FALSE}
+# Full report (requires pandoc; formats: "html", "pdf", "docx")
+fishstock_report(res, file = "rapport_cymbium", format = "html",
+                 title = "Cymbium cymbium — stock assessment",
+                 author = "stockflow")
+```
+
+# Pipeline summary
+
+| Step | `stockflow` function(s) | Official package wrapped |
+|-------|-------------------------|---------------------------|
+| Exploration | `plot_length_frequency`, `plot_length_weight`, `plot_length_evolution` | ggplot2 |
+| LFQ | `prepare_tropfish` | TropFishR |
+| Growth | `run_powell`, `run_kscan`, `run_elefan`, `run_elefan_ga/sa`, `plot_response_surface`, `plot_growth_modes`, `plot_vbgf` | TropFishR |
+| Mortality | `estimate_M_all`, `run_mortality` | FSA, TropFishR, fishmethods |
+| Allometry | `fit_length_weight` | FSA |
+| Maturity | `plot_maturity_ogive` | stats (GLM) |
+| LBSPR | `lbspr_pars`, `lbspr_sim`, `run_lbspr` | LBSPR |
+| LBB | `run_lbb_froese`, `lbb_reference_points` | LBB (Froese) |
+| YPR | `ypr_param`, `run_ypr`, `ypr_reference_points` | TropFishR |
+| TAC / quotas | `compute_tac`, `compute_prorata`, `allocate_quota` | — |
+| Biological rest period | `spawning_season`, `optimal_closure` | TropFishR |
+| Technical measures | `recommend_sizes`, `retention_curve` | TropFishR |
+| Report | `collect_results`, `summary_table`, `fishstock_report` | rmarkdown |
+
+```{r session}
+sessionInfo()
+```
