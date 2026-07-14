@@ -70,6 +70,14 @@
                          Linf = NULL,
                          K = NULL) {
 
+  ## Coerce to a single numeric, returning NA when absent/empty so that
+  ## downstream `is.finite(gp$t_anchor)` guards evaluate cleanly (a
+  ## zero-length numeric would make `if (...)` error).
+  .num1 <- function(x) {
+    v <- suppressWarnings(as.numeric(x))
+    if (length(v) == 0L) NA_real_ else v[1L]
+  }
+
   ## 1. Explicit values take priority
 
   if (!is.null(Linf) && !is.null(K)) {
@@ -98,7 +106,7 @@
 
     return(list(Linf = as.numeric(p$Linf),
                 K    = as.numeric(p$K),
-                t_anchor = suppressWarnings(as.numeric(p$t_anchor))))
+                t_anchor = .num1(p$t_anchor)))
 
   }
 
@@ -121,6 +129,35 @@
 
     return(list(Linf = as.numeric(growth_model$result$par[["Linf"]]),
                 K    = as.numeric(growth_model$result$par[["K"]])))
+
+  }
+
+
+  ## 5. run_growth_analysis() result (FishStockGrowthAnalysis): the chosen
+  ##    model lives in $best, with flat Linf/K/t_anchor fields.
+
+  if (is.list(growth_model) &&
+      !is.null(growth_model$best) &&
+      !is.null(growth_model$best$Linf) &&
+      !is.null(growth_model$best$K)) {
+
+    return(list(Linf     = as.numeric(growth_model$best$Linf),
+                K        = as.numeric(growth_model$best$K),
+                t_anchor = .num1(growth_model$best$t_anchor)))
+
+  }
+
+
+  ## 6. Flat list with direct Linf/K fields, e.g.
+  ##    list(Linf = ..., K = ..., t0 = ...). Also carries t_anchor/t0 through.
+
+  if (is.list(growth_model) &&
+      !is.null(growth_model[["Linf"]]) &&
+      !is.null(growth_model[["K"]])) {
+
+    return(list(Linf     = as.numeric(growth_model[["Linf"]]),
+                K        = as.numeric(growth_model[["K"]]),
+                t_anchor = .num1(growth_model[["t_anchor"]])))
 
   }
 

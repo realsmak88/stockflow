@@ -52,6 +52,30 @@ test_that(".growth_pars extracts from a $par list", {
 })
 
 
+test_that(".growth_pars extracts from a flat list(Linf, K, t0)", {
+
+  gp <- .growth_pars(list(Linf = 42, K = 0.45, t0 = -0.3))
+  expect_equal(gp$Linf, 42)
+  expect_equal(gp$K, 0.45)
+  ## t_anchor absent from a flat list -> NA (a clean scalar, not numeric(0))
+  expect_true(is.na(gp$t_anchor))
+  expect_length(gp$t_anchor, 1L)
+
+})
+
+
+test_that(".growth_pars extracts from a FishStockGrowthAnalysis ($best)", {
+
+  fake <- list(best = list(Linf = 50, K = 0.25, t_anchor = 0.4))
+  class(fake) <- "FishStockGrowthAnalysis"
+  gp <- .growth_pars(fake)
+  expect_equal(gp$Linf, 50)
+  expect_equal(gp$K, 0.25)
+  expect_equal(gp$t_anchor, 0.4)
+
+})
+
+
 test_that("estimate_M_all works (if TropFishR is available)", {
 
   skip_if_not_installed("TropFishR")
