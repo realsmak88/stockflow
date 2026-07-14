@@ -8,6 +8,8 @@ plot_length_weight(
   data,
   length_col,
   weight_col,
+  sex_col = NULL,
+  sex = c("both", "M", "F"),
   scale = c("both", "power", "log"),
   log_scale = NULL,
   level = 0.95,
@@ -18,6 +20,15 @@ plot_length_weight(
 \item{data}{data.frame of individual measurements.}
 
 \item{length_col, weight_col}{Length and weight columns.}
+
+\item{sex_col}{Optional name of the sex column (values coerced to
+upper case; only \code{"M"}/\code{"F"} are kept). When supplied, points
+are coloured by sex and, for \code{sex = "both"}, a separate
+\eqn{W = a L^b} fit is drawn for each sex.}
+
+\item{sex}{One of \code{"both"} (default), \code{"M"} or \code{"F"}.
+\code{"M"}/\code{"F"} restrict the plot to that sex; requires
+\code{sex_col}.}
 
 \item{scale}{Plot scale: \code{"both"} (default, natural
 scale and log-log side by side), \code{"power"} (natural scale
@@ -47,6 +58,10 @@ by side.
 \dontrun{
 plot_length_weight(cymbium_bio, "LCQ", "weight")               # both
 plot_length_weight(cymbium_bio, "LCQ", "weight", scale = "power")
+# colour by sex, separate fit per sex
+plot_length_weight(cymbium_bio, "LCQ", "weight", sex_col = "sex")
+# females only
+plot_length_weight(cymbium_bio, "LCQ", "weight", sex_col = "sex", sex = "F")
 }
 }
 \seealso{

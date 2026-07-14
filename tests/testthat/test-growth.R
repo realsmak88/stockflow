@@ -96,3 +96,15 @@ test_that("the plot S3 methods return the object invisibly", {
   ks  <- run_kscan(lfq, Linf = 42, K_range = seq(0.2, 1.0, 0.2))
   expect_invisible(plot(ks))
 })
+
+test_that("estimate_t0 matches Pauly's empirical formula", {
+  ## Pauly (1979): log10(-t0) = -0.3922 - 0.2752 log10(Linf) - 1.0380 log10(K)
+  expected <- -(10 ^ (-0.3922 - 0.2752 * log10(42) - 1.0380 * log10(0.45)))
+  expect_equal(estimate_t0(Linf = 42, K = 0.45), expected, tolerance = 1e-9)
+  ## t0 is expected to be (slightly) negative
+  expect_lt(estimate_t0(Linf = 30, K = 0.3), 0)
+  ## input guards
+  expect_error(estimate_t0(Linf = -1, K = 0.4), "Linf")
+  expect_error(estimate_t0(Linf = 42, K = 0),   "K")
+  expect_error(estimate_t0(Linf = c(40, 42), K = 0.4), "Linf")
+})

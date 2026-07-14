@@ -11,6 +11,8 @@
 ###############################################################
 
 utils::globalVariables(c(
+  # plots.R - plot_length_weight per-sex fits
+  ".grp", ".sexe",
   # ggplot2 (aes) - lbb.R, lbspr.R, mse.R
   "Year", "val", "ind", "SPR", "Yield_rel", "scenario",
   "BB0", "BBmsy", "FM", "SL50", "SL95",

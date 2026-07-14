@@ -238,6 +238,26 @@ plot_length_evolution <- function(data,
 # 2. Length-weight relationship
 #==============================================================
 
+## Internal: power-law fit W = a L^b on the logarithms, returning the
+## coefficients, their CI, R2, a ready-made annotation label and the
+## fitted curve with its confidence band (back-transformed to natural
+## scale). Shared by the pooled and per-sex branches of plot_length_weight.
+.lw_fit <- function(L, W, level) {
+  m    <- stats::lm(log(W) ~ log(L))
+  a    <- exp(stats::coef(m)[1])
+  b    <- stats::coef(m)[2]
+  r2   <- summary(m)$r.squared
+  b_ci <- stats::confint(m, "log(L)", level = level)
+  Lseq <- seq(min(L), max(L), length.out = 200)
+  pred <- stats::predict(m, newdata = data.frame(L = Lseq),
+                         interval = "confidence", level = level)
+  list(a = a, b = b, r2 = r2, b_ci = b_ci,
+       curve = data.frame(.L = Lseq, .W = exp(pred[, "fit"]),
+                          .lo = exp(pred[, "lwr"]), .hi = exp(pred[, "upr"])),
+       lab = sprintf("a = %.4g\nb = %.2f [%.2f - %.2f]\nR2 = %.3f",
+                     a, b, b_ci[1], b_ci[2], r2))
+}
+
 #' Length-weight relationship (W = a L^b)
 #'
 #' Length-weight scatter plot with power law fit \eqn{W = a L^b}
@@ -248,6 +268,13 @@ plot_length_evolution <- function(data,
 #'
 #' @param data data.frame of individual measurements.
 #' @param length_col,weight_col Length and weight columns.
+#' @param sex_col Optional name of the sex column (values coerced to
+#'   upper case; only \code{"M"}/\code{"F"} are kept). When supplied, points
+#'   are coloured by sex and, for \code{sex = "both"}, a separate
+#'   \eqn{W = a L^b} fit is drawn for each sex.
+#' @param sex One of \code{"both"} (default), \code{"M"} or \code{"F"}.
+#'   \code{"M"}/\code{"F"} restrict the plot to that sex; requires
+#'   \code{sex_col}.
 #' @param scale Plot scale: \code{"both"} (default, natural
 #'   scale and log-log side by side), \code{"power"} (natural scale
 #'   with the \eqn{W = a L^b} curve) or \code{"log"} (linear log-log).
@@ -265,11 +292,17 @@ plot_length_evolution <- function(data,
 #' \dontrun{
 #' plot_length_weight(cymbium_bio, "LCQ", "weight")               # both
 #' plot_length_weight(cymbium_bio, "LCQ", "weight", scale = "power")
+#' # colour by sex, separate fit per sex
+#' plot_length_weight(cymbium_bio, "LCQ", "weight", sex_col = "sex")
+#' # females only
+#' plot_length_weight(cymbium_bio, "LCQ", "weight", sex_col = "sex", sex = "F")
 #' }
 #' @export
 plot_length_weight <- function(data,
                                length_col,
                                weight_col,
+                               sex_col = NULL,
+                               sex = c("both", "M", "F"),
                                scale = c("both", "power", "log"),
                                log_scale = NULL,
                                level = 0.95,
@@ -280,50 +313,90 @@ plot_length_weight <- function(data,
   if (missing(scale) && !is.null(log_scale))
     scale <- if (isTRUE(log_scale)) "log" else "power"
   scale <- match.arg(scale)
+  sex   <- match.arg(sex)
 
   .need_col(data, length_col, "length_col")
   .need_col(data, weight_col, "weight_col")
 
   d <- data[is.finite(data[[length_col]]) & is.finite(data[[weight_col]]) &
             data[[length_col]] > 0 & data[[weight_col]] > 0, , drop = FALSE]
-  if (nrow(d) < 3) stop("Too few valid points for the fit.",
-                        call. = FALSE)
 
-  ## Single power law fit on the logarithms.
-  L <- d[[length_col]]; W <- d[[weight_col]]
-  m  <- stats::lm(log(W) ~ log(L))
-  a  <- exp(stats::coef(m)[1])
-  b  <- stats::coef(m)[2]
-  r2 <- summary(m)$r.squared
-  ## 95 percent confidence interval of the exponent b
-  b_ci <- stats::confint(m, "log(L)", level = level)
-  lab <- sprintf("a = %.4g\nb = %.2f [%.2f - %.2f]\nR2 = %.3f",
-                 a, b, b_ci[1], b_ci[2], r2)
+  ## --- sex handling ---
+  if (sex != "both" && is.null(sex_col))
+    stop("sex = '", sex, "' requires 'sex_col' to be supplied.", call. = FALSE)
+  use_sex <- !is.null(sex_col)
+  if (use_sex) {
+    .need_col(d, sex_col, "sex_col")
+    d$.sexe <- toupper(as.character(d[[sex_col]]))
+    d <- d[d$.sexe %in% c("M", "F"), , drop = FALSE]
+    if (sex %in% c("M", "F"))
+      d <- d[d$.sexe == sex, , drop = FALSE]
+  }
+  if (nrow(d) < 3) stop("Too few valid points for the fit.", call. = FALSE)
 
-  ## Fitted power curve + confidence band: predicted on the log
-  ## scale (where the CI is valid) then back-transformed to natural scale.
-  Lseq  <- seq(min(L), max(L), length.out = 200)
-  pred  <- stats::predict(m, newdata = data.frame(L = Lseq),
-                          interval = "confidence", level = level)
-  curve <- data.frame(.L = Lseq,
-                      .W  = exp(pred[, "fit"]),
-                      .lo = exp(pred[, "lwr"]),
-                      .hi = exp(pred[, "upr"]))
+  ## Group by sex only when both sexes are shown and present.
+  group_by_sex <- use_sex && sex == "both" &&
+                  length(unique(d$.sexe)) > 1
+
+  ## Fit one power law per group (or a single pooled fit).
+  if (group_by_sex) {
+    grps <- sort(unique(d$.sexe))
+    fits <- lapply(grps, function(g) {
+      dd <- d[d$.sexe == g, , drop = FALSE]
+      f  <- .lw_fit(dd[[length_col]], dd[[weight_col]], level)
+      f$curve$.grp <- g
+      f
+    })
+    names(fits) <- grps
+    curve <- do.call(rbind, lapply(fits, `[[`, "curve"))
+    lab   <- paste(vapply(grps, function(g)
+      paste0(g, ": ", gsub("\n", "  ", fits[[g]]$lab)), character(1)),
+      collapse = "\n")
+  } else {
+    f     <- .lw_fit(d[[length_col]], d[[weight_col]], level)
+    curve <- f$curve
+    curve$.grp <- "fit"
+    lab   <- f$lab
+  }
 
   ci_pct <- round(100 * level)
+  ## Point/curve colour for the single-group case: the sex colour when
+  ## filtered to one sex, otherwise the default blue/red pairing.
+  single_col <- if (use_sex && sex %in% c("M", "F"))
+    unname(.pal_sexe[sex]) else "#2166ac"
+  single_curve_col <- if (use_sex && sex %in% c("M", "F"))
+    unname(.pal_sexe[sex]) else "#c0392b"
 
   ## --- natural scale panel (power law) ---
   p_pow <- ggplot2::ggplot(d, ggplot2::aes(x = .data[[length_col]],
-                                           y = .data[[weight_col]])) +
-    ggplot2::geom_point(alpha = 0.25, size = 0.7, colour = "#2166ac") +
-    ggplot2::geom_ribbon(data = curve,
-                         ggplot2::aes(x = .L, ymin = .lo, ymax = .hi),
-                         fill = "#c0392b", alpha = 0.2, inherit.aes = FALSE) +
-    ggplot2::geom_line(data = curve, ggplot2::aes(.L, .W),
-                       colour = "#c0392b", linewidth = 0.9,
-                       inherit.aes = FALSE) +
+                                           y = .data[[weight_col]]))
+  if (group_by_sex) {
+    p_pow <- p_pow +
+      ggplot2::geom_point(ggplot2::aes(colour = .sexe),
+                          alpha = 0.25, size = 0.7) +
+      ggplot2::geom_ribbon(data = curve,
+                           ggplot2::aes(x = .L, ymin = .lo, ymax = .hi,
+                                        fill = .grp),
+                           alpha = 0.18, inherit.aes = FALSE) +
+      ggplot2::geom_line(data = curve,
+                         ggplot2::aes(.L, .W, colour = .grp),
+                         linewidth = 0.9, inherit.aes = FALSE) +
+      ggplot2::scale_colour_manual(values = .pal_sexe, name = "sex") +
+      ggplot2::scale_fill_manual(values = .pal_sexe, name = "sex")
+  } else {
+    p_pow <- p_pow +
+      ggplot2::geom_point(alpha = 0.25, size = 0.7, colour = single_col) +
+      ggplot2::geom_ribbon(data = curve,
+                           ggplot2::aes(x = .L, ymin = .lo, ymax = .hi),
+                           fill = single_curve_col, alpha = 0.2,
+                           inherit.aes = FALSE) +
+      ggplot2::geom_line(data = curve, ggplot2::aes(.L, .W),
+                         colour = single_curve_col, linewidth = 0.9,
+                         inherit.aes = FALSE)
+  }
+  p_pow <- p_pow +
     ggplot2::annotate("text", x = -Inf, y = Inf, label = lab,
-                      hjust = -0.15, vjust = 1.2, size = 3.3) +
+                      hjust = -0.08, vjust = 1.2, size = 3.1) +
     ggplot2::labs(title = if (scale == "both") "Natural scale" else title,
                   subtitle = sprintf("Curve W = a L^b (CI%d %% band)", ci_pct),
                   x = length_col, y = weight_col) +
@@ -331,17 +404,30 @@ plot_length_weight <- function(data,
 
   ## --- log-log panel (linear relationship) ---
   p_log <- ggplot2::ggplot(d, ggplot2::aes(x = .data[[length_col]],
-                                           y = .data[[weight_col]])) +
-    ggplot2::geom_point(alpha = 0.25, size = 0.7, colour = "#2166ac") +
-    ggplot2::geom_smooth(method = "lm", formula = y ~ x, colour = "black",
-                         fill = "grey60", linewidth = 0.7, se = TRUE,
-                         level = level) +
+                                           y = .data[[weight_col]]))
+  if (group_by_sex) {
+    p_log <- p_log +
+      ggplot2::geom_point(ggplot2::aes(colour = .sexe),
+                          alpha = 0.25, size = 0.7) +
+      ggplot2::geom_smooth(ggplot2::aes(colour = .sexe, fill = .sexe),
+                           method = "lm", formula = y ~ x,
+                           linewidth = 0.7, se = TRUE, level = level) +
+      ggplot2::scale_colour_manual(values = .pal_sexe, name = "sex") +
+      ggplot2::scale_fill_manual(values = .pal_sexe, name = "sex")
+  } else {
+    p_log <- p_log +
+      ggplot2::geom_point(alpha = 0.25, size = 0.7, colour = single_col) +
+      ggplot2::geom_smooth(method = "lm", formula = y ~ x, colour = "black",
+                           fill = "grey60", linewidth = 0.7, se = TRUE,
+                           level = level)
+  }
+  p_log <- p_log +
     ## Finite coordinates (derived from data): under scale_*_log10(),
     ## a -Inf position triggers log10(-Inf) -> "NaNs produced".
     ggplot2::annotate("text",
                       x = min(d[[length_col]], na.rm = TRUE),
                       y = max(d[[weight_col]], na.rm = TRUE),
-                      label = lab, hjust = -0.05, vjust = 1.2, size = 3.3) +
+                      label = lab, hjust = -0.02, vjust = 1.2, size = 3.1) +
     ggplot2::scale_x_log10() + ggplot2::scale_y_log10() +
     ggplot2::labs(title = if (scale == "both") "Logarithmic scales" else title,
                   subtitle = sprintf("Logarithmic scales (CI%d %% band)",

@@ -1715,6 +1715,48 @@ best_growth_model <- function(comparison,
 }
 
 #==============================================================
+# Empirical t0 (Pauly 1979)
+#==============================================================
+
+#' Empirical age at zero length (t0) from Pauly's equation
+#'
+#' Estimates the theoretical age at which length is zero (\eqn{t_0}) of the
+#' von Bertalanffy growth function from \eqn{L_{inf}} and \eqn{K} using
+#' Pauly's (1979) empirical relationship, useful when \eqn{t_0} cannot be
+#' estimated directly (e.g. length-frequency methods anchored on
+#' \code{t_anchor} rather than \eqn{t_0}):
+#' \deqn{\log_{10}(-t_0) = -0.3922 - 0.2752\,\log_{10}(L_{inf})
+#'       - 1.0380\,\log_{10}(K).}
+#' \eqn{L_{inf}} is expected in centimetres and \eqn{K} per year, as in the
+#' original publication.
+#'
+#' @param Linf Asymptotic length \eqn{L_{inf}} (cm), strictly positive.
+#' @param K Von Bertalanffy growth coefficient \eqn{K} (per year),
+#'   strictly positive.
+#' @return A numeric \eqn{t_0} (years), typically slightly negative.
+#' @references Pauly, D. (1979). Gill size and temperature as governing
+#'   factors in fish growth: a generalization of von Bertalanffy's growth
+#'   formula. Berichte des Instituts fuer Meereskunde, Kiel, No. 63.
+#' @seealso \code{\link{vbgf_curve}}, \code{\link{run_growth_analysis}}
+#' @examples
+#' estimate_t0(Linf = 42, K = 0.45)
+#' @export
+estimate_t0 <- function(Linf, K) {
+
+  if (!is.numeric(Linf) || length(Linf) != 1L || !is.finite(Linf) ||
+      Linf <= 0)
+    stop("'Linf' must be a single strictly positive number (cm).",
+         call. = FALSE)
+  if (!is.numeric(K) || length(K) != 1L || !is.finite(K) || K <= 0)
+    stop("'K' must be a single strictly positive number (per year).",
+         call. = FALSE)
+
+  ## Pauly (1979): log10(-t0) = -0.3922 - 0.2752 log10(Linf) - 1.0380 log10(K)
+  log10_neg_t0 <- -0.3922 - 0.2752 * log10(Linf) - 1.0380 * log10(K)
+  -(10 ^ log10_neg_t0)
+}
+
+#==============================================================
 # von Bertalanffy curve (predictor)
 #==============================================================
 

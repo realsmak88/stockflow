@@ -52,6 +52,24 @@ test_that("plot_length_weight fits and plots the power law", {
 })
 
 
+test_that("plot_length_weight colours by sex and filters M/F", {
+  ## both sexes: coloured scatter + one fit per sex
+  p_both <- plot_length_weight(bio, "L", "W", sex_col = "sex", scale = "power")
+  expect_true(is_gg(p_both)); expect_true(builds(p_both))
+
+  ## single sex: restricts the data and still builds
+  p_f <- plot_length_weight(bio, "L", "W", sex_col = "sex", sex = "F",
+                            scale = "power")
+  expect_true(is_gg(p_f)); expect_true(builds(p_f))
+  p_m <- plot_length_weight(bio, "L", "W", sex_col = "sex", sex = "M",
+                            scale = "log")
+  expect_true(is_gg(p_m)); expect_true(builds(p_m))
+
+  ## sex != "both" without sex_col is an error
+  expect_error(plot_length_weight(bio, "L", "W", sex = "F"), "sex_col")
+})
+
+
 test_that("plot_vbgf accepts one or several parameter sets", {
   skip_if_not_installed("TropFishR")
   p1 <- plot_vbgf(Linf = 42, K = 0.45)
